@@ -1,0 +1,670 @@
+-- Data Ingestion and Processing -  New york City TLC Dataset Case Study
+
+-- dropping the table if exists
+drop table tlc_taxi_nyk;
+
+-- running the jar command
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-- Creating a table for the newyork TLC Taxi dataset
+-- Columns such as pickup_time and drop off time are imported as timestamps
+create external table if not exists TLC_TAXI_NYK 
+(vendor_id int, pickup_time timestamp,dropoff_time timestamp, passenger_count  int, 
+trip_distance double, ratecode_id int, storefwd_flag string,pu_location int, do_location int, 
+payment_type int, fare_amount double, extra double,mta_tax double, tip_amount double,
+tolls_amount double, imp_scharge double, tot_amt double)
+ROW FORMAT DELIMITED 
+FIELDS TERMINATED BY ','
+LOCATION '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1");
+
+-- visualizing the data once
+select * from tlc_taxi_nyk limit 2;
+
+--understanding total no of rows/records
+select count(*) as total_records 
+from tlc_taxi_nyk;
+
+/*OUTPUT:
+ 	total_records
+1	1174569*/
+-- Inferences: The total number of records/rows is 1174569
+
+
+
+-- BASIC QUALITY CHECKS
+
+-- 1.How many records has each TPEP provider provided? 
+-- Write a query that summarises the number of records of each provider
+-- Solution:
+select vendor_id, count(*) as records_byprovider
+from tlc_taxi_nyk
+group by vendor_id
+order by records_byprovider desc;
+
+/* OUTPUT:
+ 	vendor_id	records_byprovider
+1	2	647183
+2	1	527386
+Inferences: Vendor 1 creative mobile technologies  provided 647183 records, 
+Vendor 2 VeriFone Inc. provided 527386 queries */
+
+
+
+-- 2. Check whether the data is consistent in timestamp columns, and if not, 
+-- identify the data quality issues. Mention all data quality issues in comments.
+-- Solution:
+
+-- checking issues for month in pick-up column
+select month(pickup_time) as mnth, count(*) as month_records
+from tlc_taxi_nyk 
+group by month(pickup_time)
+order by month_records desc;
+
+/*OUTPUT:
+	mnth	month_records
+1	12	594257
+2	11	580300
+3	1	6
+4	10	6
+Inference: we found total 12 faulty records for pickup_time where month is not November 
+and December*/
+
+-- checking issues in month of drop-off colum
+select month(dropoff_time) as mnth, count(*) as month_records
+from tlc_taxi_nyk 
+group by month(dropoff_time)
+order by month_records desc;
+
+/*OUTPUT:
+ 	mnth	month_records
+1	12	594400
+2	11	580053
+3	1	113
+4	10	2
+5	4	1
+Inference:we found 116 faulty recors for drop-off time where month is not November and 
+December */
+
+-- Single query for identifying various issues in the pick-up time and drop-off time columns
+select count(*) as erroneous_rows_timestamp
+from tlc_taxi_nyk
+where month (pickup_time) not in (11,12) or 
+month(dropoff_time) not in (11,12) or
+year(pickup_time) != 2017
+or year(dropoff_time) != 2017
+or pickup_time > dropoff_time;
+
+/* OUTPUT:
+ 	erroneous_rows_timestamp
+1	194
+
+-- Inferences:
+There are total 194 records that have invalid data in both pickup_time and dropoff_time
+columns
+The main quality issues are
+1. Some of the records/trips have months other than November and December
+2. Some of the trips have year other than 2017
+3. Some of the trips have pikcup time greater than dropoff time
+4. Some of the trips also have pickup time equal to drop off time. We are not 
+identifying them as erroneous since these may be cancelled trips.*/
+
+
+
+
+-- 3. Identifying erroneous rows in other columns and concluding which vendor is doing 
+-- a bad job in providing the records 
+
+-- 3.a Identifying issues with passenger count column
+select passenger_count, count(*) as passenger_records
+from tlc_taxi_nyk
+group by passenger_count
+order by passenger_records desc;
+
+/* OUTPUT:
+ 	passenger_count	passenger_records
+1	1	827499
+2	2	176872
+3	5	54568
+4	3	50693
+5	6	33146
+6	4	24951
+7	0	6824
+8	7	12
+9	8	3
+10	9	1
+-- Inferences: 
+1. 6824 trips have passenger count as zero. These records are invalid aspassenger count cannot be zero 
+and therefore needs to be removed.
+ 2. There are alsoe some trip where passenger count are more than 6. we have considered them valid as
+ limo cars may accomodate people upto 12*/
+
+
+
+-- 3.b Identifying issues with trip distance
+-- checking the maximum distance and minimum distance in the trip distance column
+select max(trip_distance) as max_distance, min(trip_distance) min_distance
+from tlc_taxi_nyk;
+
+/*OUTPUT:
+ 	max_distance	min_distance
+1	126.41	0
+Inferences: The maximum distance is 126.4 miles where as minimum distance is zero */
+
+-- checking the records where trip_distance is zero
+select count(*) as trip_distance_zero
+from tlc_taxi_nyk
+where trip_distance = 0;
+
+/*OUTPUT:
+ 	trip_distance_zero
+1	7402
+-- 7402 trips have trip distance as zero. 
+
+-- Inferences: Although we found 7402 trips have zero trip distance. 
+we are concluding them as NOT erroneous since these can be cancelled trips*/
+
+
+
+-- 3.c checking for issues in pickup location and drop off locations
+-- checking for any null values in pickup location and dropoff locaitons
+select *
+from  tlc_taxi_nyk
+where pu_location is null;
+-- 0 results
+select *
+from  tlc_taxi_nyk
+where do_location is null;
+-- 0 results
+-- Inferences: No data quality issues in pickup and drop off locations
+
+
+
+
+-- 3.d Checking for issues in Rate Code column
+-- Identifying any other values in Ratecode_id column which is not 1-6
+select ratecode_id, count(*) as ratecode_records
+from tlc_taxi_nyk
+group by ratecode_id
+order by ratecode_records desc;
+
+/* OUTPUT:
+ 	ratecode_id	ratecode_records
+1	1	1142278
+2	2	25338
+3	5	3793
+4	3	2562
+5	4	586
+6	99	9
+7	6	3
+-- Inferences: 9 trips have ratecode_id as 99. These needs to be deleted*/
+
+
+
+-- 3.e Checking for issues in storefwd_records
+select storefwd_flag, count(*) as storefwd_records
+from tlc_taxi_nyk
+group by storefwd_flag
+order by storefwd_records desc;
+
+/*OUTPUT:
+ 	storefwd_flag	storefwd_records
+1	N	1170618
+2	Y	3951 
+-- Inferences: No data quality issues found in storefwd_flag column*/
+
+
+
+-- 3.f checking the column payment_type for any data issues
+select payment_type, count(*) as payment_records
+from tlc_taxi_nyk
+group by payment_type
+order by payment_records desc;
+/* OUTPUT:
+ 	payment_type	payment_records
+1	1	790256
+2	2	376374
+3	3	6274
+4	4	1665
+-- Inferences: No data quality issues found in payment_type column*/
+
+
+
+--3.g checking the fare_amount column for any data issues
+select max(fare_amount) as max_fare, 
+min(fare_amount) as min_fare
+from tlc_taxi_nyk;
+/* OUTPUT:
+ 	max_fare	min_fare
+1	650	-200
+-- The maximum fare_amount is 650 while minimum is -200*/
+
+-- Identifying trips having negative values in fare_amount
+select count(*) as erroneours_fare_records
+from tlc_taxi_nyk
+where fare_amount < 0;
+/* OUTPUT:
+ 	erroneours_fare_records
+1	558
+-- Inferences:There are about 558 trips that have negative values in fare_amount column
+and these are erroneous*/
+
+
+
+-- 3.h Checking the extra changes column for any data issues
+select count(*) as extra_error_records
+from tlc_taxi_nyk
+where extra not in (0, 0.5, 1);
+/* OUTPUT:
+ 	extra_error_records
+1	4856
+
+Inferences: There are about 4856 trips where the extra charges are other than 0 or 0.5 or 1.
+These can be considered as erroneous as they are not according to data dictionary 
+and needs to be deleted*/
+
+
+
+-- 3.i checking for data quality issues in mta_tax column
+select mta_tax, count(*) as mta_records
+from tlc_taxi_nyk
+group by mta_tax
+order by mta_records desc;
+/* OUTPUT:
+ 	mta_tax	mta_records
+1	0.5	1168824
+2	0	5197
+3	-0.5	544
+4	3	3
+5	11.4	1
+Inferences: There are 544 rows where mta_tax has negative values and also other 4 trips 
+contain positive values that should not be there according to data dictionary*/
+
+
+
+-- 3.j Checking for data quality issues in tip_amount column
+select count(*) as erroneous_tip_amount_records
+from tlc_taxi_nyk
+where tip_amount <0;
+
+/*OUPUT:
+ 	erroneous_tip_amount_records
+1	4
+-- Inferences: There are 4 records where tip_amount is less than zero*/
+
+
+
+-- 3.k Checking for data quality issues in tolls_amount column
+select count(*) as erroneous_toll_records
+from tlc_taxi_nyk
+where tolls_amount <0;
+
+/* OUPUT:
+ 	erroneous_toll_records
+1	3
+-- Inferences: There are 3 records where tolls_amount is less than zero*/
+
+
+
+-- 3.l Checking for data quality issues in improvement surcharge column
+select imp_scharge, count(*) as scharge_records
+from tlc_taxi_nyk
+group by imp_scharge
+order by scharge_records desc;
+
+/* OUTPUT:
+ 	imp_scharge	scharge_records
+1	0.3	1173720
+2	-0.3	558
+3	0	287
+4	1	4
+Inferences: 558 records have negative values and 4 other records have 1$. Since the data
+dictionary specifically mentions the improvement surcharge is 0.3$. We are considering it 
+should only contain either 0 or 0.3 the remaining records are erroneous and needs to be deleted.*/
+
+
+
+--3.m Checking for data quality issues in total amount column
+select count(*) as erroneous_tot_amt_records
+from tlc_taxi_nyk
+where tot_amt <0;
+/* OUTPUT:
+ 	erroneous_tot_amt_records
+1	558
+Inferences: 558 records or trips have negative values in total amount columns. These are 
+erroneous and needs to be deleted*/
+
+
+
+-- 3.n Identifying Total number of records that are having quality issues
+/* Assumptions while considering the erroneous records
+-- Only records in Pickup_time, dropoff_time that has month as november and december, year as  2017 and pickuptime greater
+than equal to drop-off time has been included for analysis.
+-- The records having passenger count as zero are excluded from the analysis.
+-- Trip_distance have records with zero values but these can be linked to cancelled trips and therefore included in the analysis.
+-- No data quality issues with pickup location, drop off location, payment type and storefwd flag columns
+-- Records having ratecode_id as 99 are excluded from analysis
+-- Records having negative values in fare amount colum are excluded from analysis
+-- extra charges column has negative values and these records needs to be deleted. Also, there are positive values other 
+than 0, 0.5 and 1 which are also excluded as they are not valid according to data dictionary
+-- mta tax has negative values and these records considered as erroneous and excluded from analysis
+-- tip amount has negative values and these records considered as erroneous and excluded from analysis
+-- tolls amount has negative values and these records considered as erroneous and excluded from analysis
+-- improvement sucharges has negative values and positive values other than 0.5. These records are considered erroneous and
+excluded from analysis
+-- total amount has negative values and these records considered as erroneous and excluded from analysis*/
+
+SELECT COUNT(*) as total_error_records
+FROM tlc_taxi_nyk
+WHERE MONTH(PICKUP_TIME) NOT IN (11,12) OR YEAR(PICKUP_TIME) != 2017 OR
+pickup_time > dropoff_time or 
+MONTH(DROPOFF_TIME) NOT IN (11,12) OR YEAR(DROPOFF_TIME) != 2017 OR 
+PASSENGER_COUNT = 0 OR 
+RATECODE_ID NOT between 1 and 6 or
+PAYMENT_TYPE NOT between 1 and 6 or
+FARE_AMOUNT < 0 OR 
+EXTRA not in (0.5, 0, 1) OR 
+MTA_TAX not in (0, 0.5) or 
+TIP_AMOUNT <0 OR TOLLS_AMOUNT <0 OR
+IMP_SCHARGE not in (0, 0.3) OR TOT_AMT <0;
+
+/* OUTPUT:
+ 	total_error_records
+1	12126
+
+Inferences: Totally combined there are 12126 records based on the assumptions considered*/
+
+
+
+-- 3.o Identifying which vendor is doing a bad job in providing quality data
+SELECT COUNT(*) AS RECORDS_VENDORID, VENDOR_ID
+FROM tlc_taxi_nyk
+WHERE MONTH(PICKUP_TIME) NOT IN (11,12) OR YEAR(PICKUP_TIME) != 2017 OR
+pickup_time > dropoff_time or 
+MONTH(DROPOFF_TIME) NOT IN (11,12) OR YEAR(DROPOFF_TIME) != 2017 OR 
+PASSENGER_COUNT = 0 OR 
+RATECODE_ID NOT between 1 and 6 or
+PAYMENT_TYPE NOT between 1 and 6 or
+FARE_AMOUNT < 0 OR 
+EXTRA not in (0.5, 0, 1) OR 
+MTA_TAX not in (0, 0.5) or 
+TIP_AMOUNT <0 OR TOLLS_AMOUNT <0 OR
+IMP_SCHARGE not in (0, 0.3) OR TOT_AMT <0
+GROUP BY vendor_id
+ORDER BY RECORDS_VENDORID;
+
+/* OUTPUT:
+ 	records_vendorid	vendor_id
+1	3414	2
+2	8712	1
+
+Inferences: Out of 12126 total erroneous records - 8712 records are provided by vendor_id1
+where as vendor_id 2 provided 3414 records
+So vendor_id 1 (creative mobile technologies) is doing a bad job compared to 
+vendor_id 2(Verifone Inc.)*/
+
+
+
+/*CREATING PARTITION TABLE USING MONTH AND PASSENGER COUNT AS PARTITIONS SINCE THE ANALYSIS
+IS MAINLY FOCUSED ON MONTH AND PASSENGER COUNT. THE ERRONEOUS RECORDS IDENTIFIED ABOVE WILL
+BE FILTERED WHILE INSERTING DATA INTO THE PARTITION TABLE*/
+
+-- dropping column if it exits
+drop table TLC_TAXI_NYK_UPDATED_partition_orc
+
+-- running necessary commnands for partitions
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+-- creating new table with partitions on month and passenger count
+create external table if not exists TLC_TAXI_NYK_UPDATED_partition_orc
+(vendor_id int, pickup_time timestamp,dropoff_time timestamp,
+trip_distance double, ratecode_id int, storefwd_flag string,pu_location int, do_location int, 
+payment_type int, fare_amount double, extra double,mta_tax double, tip_amount double,
+tolls_amount double, imp_scharge double, tot_amt double)
+partitioned by (month int, passenger_count int)
+stored as orc
+LOCATION '/user/hive/warehouse/casestudy_updated_orc_tlc_taxi_teamravitaher/'
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Inserting the data into partition table while also filtering erroneous records
+insert overwrite table TLC_TAXI_NYK_UPDATED_partition_orc partition(month, passenger_count)
+select vendor_id, pickup_time, dropoff_time, trip_distance, ratecode_id, storefwd_flag,
+pu_location, do_location, payment_type, fare_amount, extra, mta_tax, tip_amount, tolls_amount, imp_scharge,
+tot_amt, month(pickup_time) as month, passenger_count
+from tlc_taxi_nyk
+WHERE MONTH(PICKUP_TIME) IN (11,12) and YEAR(PICKUP_TIME) = 2017 and
+pickup_time <= dropoff_time and 
+MONTH(DROPOFF_TIME) IN (11,12) and YEAR(DROPOFF_TIME) = 2017 and
+tlc_taxi_nyk.PASSENGER_COUNT != 0 and 
+RATECODE_ID between 1 and 6 and
+PAYMENT_TYPE between 1 and 6 and
+FARE_AMOUNT >= 0 and 
+EXTRA in (0.5, 0, 1) and 
+MTA_TAX in (0, 0.5) and
+TIP_AMOUNT >=0 and TOLLS_AMOUNT >=0 and
+IMP_SCHARGE in (0, 0.3) and TOT_AMT >=0;
+
+-- Checking total count of the records for the partition table created
+select count(*) as total_records 
+from tlc_taxi_nyk_updated_partition_orc;
+
+/* OUTPUT:
+ 	total_records
+1	1162443
+Inference: The total number of records after partition and deleting erroneous records are
+1162443*/
+
+
+
+
+-- ANALYSIS I: (AFTER Creating partition table based on orc)
+
+-- ANALYSIS I: 1. Compare the overall average fare per trip for November and December.
+-- Solution:
+select month, round(avg(fare_amount),2) as avg_fare
+from tlc_taxi_nyk_updated_partition_orc
+group by `month`
+order by avg_fare desc;
+
+/* OUTPUT:
+ 	month	avg_fare
+1	11	12.96
+2	12	12.76
+
+Inferences: Average Fare is slightly higher for November month compared to Decemeber month*/
+
+
+
+-- ANALYSIS I: 2.1 how many trips are made by each level of ‘Passenger_count’? 
+-- 2.2 Do most people travel solo or with other people?
+-- Solution:
+select passenger_count, count(*) as trips_passenger_count
+from tlc_taxi_nyk_updated_partition_orc
+group by passenger_count
+order by trips_passenger_count desc;
+
+/* OUTPUT:
+ 	passenger_count	trips_passenger_count
+1	1	824084
+2	2	175838
+3	5	54268
+4	3	50421
+5	6	32992
+6	4	24824
+7	7	12
+8	8	3
+9	9	1
+
+Inferences: People mostly travel solo when compared groups or couples. Infact from the 
+above table as the passenger count increase the number of trips decreases so there is a
+negative correlation between passenger count and number of trips they take. */
+
+
+
+-- ANALYSIS I:3.Which is the most preferred mode of payment?
+-- Solution:
+select payment_type, count(*) as trips_per_payment
+from tlc_taxi_nyk_updated_partition_orc
+group by payment_type
+order by trips_per_payment desc;
+
+/* OUTPUT:
+ 	payment_type	trips_per_payment
+1	1	782514
+2	2	372721
+3	3	5728
+4	4	1480
+
+Inferences: Most prefered payment is payment_type 1 i.e Credit Card. It is followed by 
+Cash, No charge and Dispute respectively */
+
+
+
+-- ANALYSIS I:4.1 What is the average tip paid per trip?
+-- ANALYSIS I:4.2 Percentiles of tip paid column 25%, 50%, 75%? 
+-- Solution:
+select round(avg(tip_amount),2) as avg_tip, 
+percentile_approx(tip_amount, array(0.25, 0.50, 0.75)) as percentile_quarters
+from tlc_taxi_nyk_updated_partition_orc;
+
+/* OUTPUT:
+ 	avg_tip	percentile_quarters
+1	1.83	[0.0,1.36,2.45]
+Inferences: 
+1. The average tip_amount is 1.83.The 25, 50, 75 percentiles of tip_amount are
+0, 1.36, 2.45 respectively
+2. The average tip_amount does not represent central tendency as the 50 percentile
+tip(1.36) is lower than average tip amount(1.83)*/
+
+
+
+-- ANALYSIS I:5 what fraction of total trips have an extra charge is levied?
+-- Solution:
+select round(count(*)/1162443*100, 2) as trips_having_no_extra
+from tlc_taxi_nyk_updated_partition_orc
+where extra >0;
+
+-- note:Total number of records 1162443 used as constant in the query. constant 100 is used for converting the fraction into percentage
+
+/* OUTPUT:
+ 	trips_having_no_extra
+1	46.01
+Inferences: 
+1. Out of the total trips, 46.01% of the trips are being levied with extra
+charges*/
+
+
+
+-- ANALYSIS II:
+
+/* ANALYSIS II: 1. What is the correlation between the number of passengers on any 
+given trip,and the tip paid per trip? Do multiple travellers tip more compared to 
+solo travellers? */
+
+-- Solution:
+select round(corr(passenger_count, tip_amount),4) as corr_between_passenger_count_and_tip
+from tlc_taxi_nyk_updated_partition_orc;
+
+/* OUTPUT:
+ 	corr_between_passenger_count_and_tip
+1	-0.005
+
+Inferences: There is no correlation between the number of passengers and tip_amount
+per trip as the correlation factor is around -0.005. So multiple travelers doesnt pay
+more tip compared to solo travelers, it would be almost similar. */
+
+
+
+
+/* ANALYSIS II: 2. Segregate the data into five segments of ‘tip paid’:
+ [0-5), [5-10), [10-15) , [15-20) and >=20. Calculate the percentage share of each bucket
+  (i.e. the fraction of trips falling in each bucket).*/
+
+-- Solution:
+SELECT 
+ROUND(COUNT(CASE WHEN tip_amount<5 THEN 1 END)/COUNT(*)*100,2) AS 0_to_5,
+ROUND(COUNT(CASE WHEN tip_amount>=5 AND tip_amount<10 THEN 1 END)/COUNT(*)*100,2) AS 5_to_10,
+ROUND(COUNT(CASE WHEN tip_amount>=10 AND tip_amount<15 THEN 1 END)/COUNT(*)*100,2) AS 10_to_15,
+ROUND(COUNT(CASE WHEN tip_amount>=15 AND tip_amount<20 THEN 1 END)/COUNT(*)*100,2) AS 15_to_20,
+ROUND(COUNT(CASE WHEN tip_amount>=20 THEN 1 END)/COUNT(*)*100,2) AS 20_and_above
+FROM tlc_taxi_nyk_updated_partition_orc;
+
+/* OUTPUT:
+ 	0_to_5	5_to_10	10_to_15	15_to_20	20_and_above
+1	92.33	5.63	1.74	0.2	0.1
+
+Inferences: 0-5 tip segment contains most of the records - 92.33% of total trips.
+5-10 tip_segment contains 5.63% of records, 10-15 tip_segment contains 1.74% of records,
+15-20 tip_segment contains 0.2% of records, >=20 tip_segment contains only 0.1% of records
+*/
+
+
+
+/* ANALYSIS II: 3. Which month has a greater average ‘speed’ - November or December? 
+Note that the variable ‘speed’ will have to be derived from other metrics. 
+Hint: You have columns for distance and time.*/
+
+--Solution:
+select month,
+round(avg(trip_distance*1.609*3600/(unix_timestamp(dropoff_time) - unix_timestamp(pickup_time))),2) as speed_kmph
+from tlc_taxi_nyk_updated_partition_orc
+where unix_timestamp(dropoff_time) != unix_timestamp(pickup_time) and trip_distance != 0
+group by `month`;
+
+/* OUTPUT:
+ 	month	speed_kmph
+1	11	17.66
+2	12	17.81
+
+-- Here we have excluded trips where trip time is zero or trip distance is zero
+-- The factor 1.609 is used for converting km into miles and 3600 is used for converting seconds into hours
+Inferences: 
+1. The average speeds in km per hour for november and december months are
+17.66 and 17.82 km per hour resepectively. So the December month have slightly higher
+speeds compared to November month*/
+
+
+
+/* ANALYSIS II: 4. Analyse the average speed of the most happening days of the year, 
+i.e. 31st December (New year’s eve) and 25th December (Christmas) and compare it with
+ the overall average.*/
+
+-- Solution:
+-- estimating avg_speed of the entire data
+select round(avg(trip_distance*1.609*3600/(unix_timestamp(dropoff_time) - unix_timestamp(pickup_time))),2) as speed_kmph
+from tlc_taxi_nyk_updated_partition_orc
+where unix_timestamp(dropoff_time) != unix_timestamp(pickup_time) and trip_distance != 0;
+
+-- note:The factor 1.609 is used for converting km into miles and 3600 is used for converting seconds into hours
+
+/* OUTPUT:
+speed_kmph
+ 	speed_kmph
+1	17.74
+*/
+
+-- estimating avg_speeds for the important days such as 25th December and 31st December
+select to_date(pickup_time) as imp_day, 
+round(avg(trip_distance*1.609*3600/(unix_timestamp(dropoff_time) - unix_timestamp(pickup_time))),2) as speed_kmph
+from tlc_taxi_nyk_updated_partition_orc
+where unix_timestamp(dropoff_time) != unix_timestamp(pickup_time) and trip_distance != 0 and 
+(to_date(pickup_time) = '2017-12-25' or
+to_date(pickup_time) = '2017-11-26' or
+to_date(pickup_time) = '2017-12-31')
+group by to_date(pickup_time);
+
+-- note:The factor 1.609 is used for converting km into miles and 3600 is used for converting seconds into hours
+
+/* OUTPUT:
+ 	imp_day	speed_kmph
+1	2017-12-25	24.56
+2	2017-11-26	22.43
+3	2017-12-31	21.36
+
+Inferences: Important days have much higher speed (25th Dec (christmas) - 24.57 kmph, 
+26th Nov (thanksgiving) - 22.43, 31st Dec - 21.36) compared to average speed of the entire dataset (17.74 kmph). 
+This may be due to drivers are driving fast so as to make as many trips as possible in festive season and rush hour.*/
+
+
+-- END OF THE DOCUMENT
